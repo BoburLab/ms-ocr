@@ -1,36 +1,62 @@
-FROM ubuntu:22.04
+# ============================================================
+# Stage 1 — Builder: install Python dependencies
+# ============================================================
+FROM python:3.11-slim AS builder
 
-# Prevent interactive prompts during package installation
-ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /build
 
-# Install system dependencies for Python, OpenCV, pdf2image, and Tesseract
-RUN apt-get update && apt-get install -y \
-    python3.11 \
-    python3.11-venv \
-    python3-pip \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    poppler-utils \
-    tesseract-ocr \
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+
+# ============================================================
+# Stage 2 — Production image
+# ============================================================
+FROM python:3.11-slim
+
+# Install only essential system packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        poppler-utils \
+        tesseract-ocr \
+        libglib2.0-0 \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Set python3.11 as default python
-RUN ln -s /usr/bin/python3.11 /usr/bin/python
+# Copy pre-built Python packages from builder
+COPY --from=builder /install /usr/local
+
+# Create non-root user
+RUN groupadd -r appuser && useradd -r -g appuser -s /usr/sbin/nologin appuser
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Create storage outside app root with restrictive permissions
+RUN mkdir -p /data/storage/raw /data/storage/preprocessed /data/storage/output \
+    && chown -R appuser:appuser /data/storage \
+    && chmod -R 700 /data/storage
 
-COPY ./app /app/app
+# Copy application code
+COPY --chown=appuser:appuser ./app /app/app
 
-# Create storage directories
-RUN mkdir -p /app/storage/raw /app/storage/preprocessed /app/storage/output
+# Environment defaults
+ENV RAW_STORAGE_PATH=/data/storage/raw \
+    PREPROCESSED_STORAGE_PATH=/data/storage/preprocessed \
+    OUTPUT_STORAGE_PATH=/data/storage/output \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
-ENV RAW_STORAGE_PATH=/app/storage/raw
-ENV PREPROCESSED_STORAGE_PATH=/app/storage/preprocessed
-ENV OUTPUT_STORAGE_PATH=/app/storage/output
+# Switch to non-root user
+USER appuser
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Production uvicorn: no reload, no access log (JSON logger handles it), single worker
+CMD ["uvicorn", "app.main:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--no-access-log", \
+     "--timeout-keep-alive", "30", \
+     "--workers", "1"]
