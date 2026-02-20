@@ -73,7 +73,7 @@ class LightOnOCREngine(OCREngine):
                     ],
                 },
             ],
-            "max_tokens": 4096,
+            "max_tokens": 4000,
             "temperature": 0.0,
         }
 
