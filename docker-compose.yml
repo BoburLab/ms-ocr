@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  # ── vLLM: GPU inference server ──────────────────────────────
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-lighton
+    ports:
+      - "8001:8001"
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+    command: >
+      --model lightonai/LightOnOCR-2-1B
+      --port 8001
+      --limit-mm-per-prompt '{"image": 1}'
+      --mm-processor-cache-gb 0
+      --no-enable-prefix-caching
+      --dtype bfloat16
+      --max-model-len 4096
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # ── OCR Microservice: API + preprocessing ───────────────────
+  ocr-service:
+    build: .
+    container_name: ocr-microservice
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./storage:/app/storage
+    environment:
+      - RAW_STORAGE_PATH=/app/storage/raw
+      - PREPROCESSED_STORAGE_PATH=/app/storage/preprocessed
+      - OUTPUT_STORAGE_PATH=/app/storage/output
+      - VLLM_BASE_URL=http://vllm:8001
+      - VLLM_MODEL_NAME=lightonai/LightOnOCR-2-1B
+    depends_on:
+      vllm:
+        condition: service_healthy
+    restart: unless-stopped
